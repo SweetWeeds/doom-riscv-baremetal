@@ -26,6 +26,13 @@ void platformConsoleWriteBytes(const char *bytes, size_t byteCount);
 /* Returns -1 when no byte is waiting. */
 int platformConsoleReadCharacter(void);
 
+/*
+ * Moves bytes waiting in the UART into a larger software buffer, so they are
+ * not lost while nobody reads them (the UART itself holds only 8-16 bytes).
+ * The transmit loops already do this; call it from other long waits.
+ */
+void platformConsoleCollectInput(void);
+
 uint64_t platformReadTimerTicks(void);
 uint64_t platformReadTimeMilliseconds(void);
 

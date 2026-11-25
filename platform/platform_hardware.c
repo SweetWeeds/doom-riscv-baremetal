@@ -5,6 +5,15 @@
 /* Console UART                                                             */
 /* ======================================================================== */
 
+/*
+ * Each UART driver provides tryReadUartByte() (one received byte, or -1) and
+ * calls platformConsoleCollectInput() while it waits to transmit; see the
+ * receive buffer section below for why.
+ */
+static int tryReadUartByte(void);
+
+#define NO_BYTE_WAITING (-1)
+
 #if PLATFORM_UART_TYPE == PLATFORM_UART_TYPE_NS16550
 
 /* NS16550A register indexes (multiplied by the register stride). */
@@ -35,15 +44,16 @@ void platformConsoleWriteCharacter(char character)
      */
     while ((*uartRegister(UART_LINE_STATUS_REGISTER_INDEX) & UART_LINE_STATUS_TRANSMIT_HOLDING_EMPTY_BIT) == 0)
     {
+        platformConsoleCollectInput();
     }
     *uartRegister(UART_TRANSMIT_HOLDING_REGISTER_INDEX) = (uint8_t)character;
 }
 
-int platformConsoleReadCharacter(void)
+static int tryReadUartByte(void)
 {
     if ((*uartRegister(UART_LINE_STATUS_REGISTER_INDEX) & UART_LINE_STATUS_DATA_READY_BIT) == 0)
     {
-        return -1;
+        return NO_BYTE_WAITING;
     }
     return *uartRegister(UART_RECEIVE_BUFFER_REGISTER_INDEX);
 }
@@ -103,11 +113,12 @@ void platformConsoleWriteCharacter(char character)
     volatile uint32_t *transmitData = sifiveUartRegister(SIFIVE_UART_TRANSMIT_DATA_OFFSET);
     while ((*transmitData & SIFIVE_UART_FIFO_STATUS_BIT) != 0)
     {
+        platformConsoleCollectInput();
     }
     *transmitData = (uint8_t)character;
 }
 
-int platformConsoleReadCharacter(void)
+static int tryReadUartByte(void)
 {
     /*
      * Reading rxdata removes the byte from the FIFO, so the "empty" flag and
@@ -116,7 +127,7 @@ int platformConsoleReadCharacter(void)
     uint32_t receiveData = *sifiveUartRegister(SIFIVE_UART_RECEIVE_DATA_OFFSET);
     if ((receiveData & SIFIVE_UART_FIFO_STATUS_BIT) != 0)
     {
-        return -1;
+        return NO_BYTE_WAITING;
     }
     return (int)(receiveData & SIFIVE_UART_DATA_MASK);
 }
@@ -124,6 +135,58 @@ int platformConsoleReadCharacter(void)
 #else
 #error "Unknown PLATFORM_UART_TYPE"
 #endif
+
+/* ======================================================================== */
+/* Receive buffer                                                           */
+/* ======================================================================== */
+
+/*
+ * The UART's own receive FIFO is tiny (8 bytes on the SiFive UART, 16 on a
+ * 16550). While a large frame goes out at 115200 bps the CPU spends most of
+ * its time waiting for transmit space, and key presses typed meanwhile would
+ * overflow that FIFO and be lost. So the transmit wait loops move received
+ * bytes into this larger buffer, and reads take bytes from here first.
+ *
+ * The indexes only ever grow and are masked on use, so the buffer stays in
+ * bounds even if a fatal trap prints something before .bss is cleared.
+ */
+#define RECEIVE_BUFFER_SIZE_BYTES 256 /* must be a power of two */
+#define RECEIVE_BUFFER_INDEX_MASK (RECEIVE_BUFFER_SIZE_BYTES - 1)
+static uint8_t receiveBuffer[RECEIVE_BUFFER_SIZE_BYTES];
+static uint32_t receiveBufferWriteCount;
+static uint32_t receiveBufferReadCount;
+
+void platformConsoleCollectInput(void)
+{
+    for (;;)
+    {
+        uint32_t storedByteCount = receiveBufferWriteCount - receiveBufferReadCount;
+        if (storedByteCount >= RECEIVE_BUFFER_SIZE_BYTES)
+        {
+            /* Full: leave further bytes in the UART rather than overwrite older input. */
+            return;
+        }
+        int receivedByte = tryReadUartByte();
+        if (receivedByte == NO_BYTE_WAITING)
+        {
+            return;
+        }
+        receiveBuffer[receiveBufferWriteCount & RECEIVE_BUFFER_INDEX_MASK] = (uint8_t)receivedByte;
+        receiveBufferWriteCount++;
+    }
+}
+
+int platformConsoleReadCharacter(void)
+{
+    platformConsoleCollectInput();
+    if (receiveBufferReadCount == receiveBufferWriteCount)
+    {
+        return NO_BYTE_WAITING;
+    }
+    uint8_t receivedByte = receiveBuffer[receiveBufferReadCount & RECEIVE_BUFFER_INDEX_MASK];
+    receiveBufferReadCount++;
+    return receivedByte;
+}
 
 void platformConsoleWriteString(const char *text)
 {

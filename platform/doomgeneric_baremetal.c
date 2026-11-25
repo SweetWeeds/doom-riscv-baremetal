@@ -8,7 +8,8 @@
  * what a CPU simulator workload needs.
  *
  * Optionally (FRAME_OUTPUT_INTERVAL > 0) every Nth frame is printed to the
- * UART as ASCII art or colour half blocks (terminal_renderer.c).
+ * UART as ASCII art or colour half blocks (terminal_renderer.c), and
+ * (SHOULD_READ_KEYBOARD) keys typed on the terminal control the game.
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -17,6 +18,7 @@
 #include <string.h>
 
 #include "doomgeneric.h"
+#include "keyboard_input.h"
 #include "platform_hardware.h"
 #include "terminal_renderer.h"
 
@@ -57,6 +59,14 @@
  */
 #ifndef SHOULD_USE_DETERMINISTIC_CLOCK
 #define SHOULD_USE_DETERMINISTIC_CLOCK 0
+#endif
+
+/*
+ * 1 = keys typed on the UART terminal control the game (keyboard_input.c).
+ * 0 = no input, so a demo benchmark never reads the UART.
+ */
+#ifndef SHOULD_READ_KEYBOARD
+#define SHOULD_READ_KEYBOARD 0
 #endif
 
 static uint32_t drawnFrameCount = 0;
@@ -123,6 +133,14 @@ void DG_SleepMs(uint32_t milliseconds)
     uint64_t wakeUpTime = platformReadTimeMilliseconds() + milliseconds;
     while (platformReadTimeMilliseconds() < wakeUpTime)
     {
+#if SHOULD_READ_KEYBOARD
+        /*
+         * DOOM does not look at input during the screen "wipe" between title,
+         * demo and levels (about a second of sleeps), so keep the keys typed
+         * meanwhile from overflowing the UART.
+         */
+        platformConsoleCollectInput();
+#endif
     }
 }
 
@@ -133,12 +151,17 @@ uint32_t DG_GetTicksMs(void)
 
 #endif /* SHOULD_USE_DETERMINISTIC_CLOCK */
 
+/* DOOM calls this until it returns 0, every time it looks for input. */
 int DG_GetKey(int *isPressed, unsigned char *doomKey)
 {
-    /* Demo playback needs no input; report "no key event". */
+#if SHOULD_READ_KEYBOARD
+    keyboardInputPoll(DG_GetTicksMs());
+    return keyboardInputTakeEvent(isPressed, doomKey);
+#else
     (void)isPressed;
     (void)doomKey;
     return 0;
+#endif
 }
 
 void DG_SetWindowTitle(const char *title)

@@ -5,6 +5,9 @@
 #   make run-ascii       timedemo at full speed, every 35th frame as ASCII text
 #   make run-color       real-time demo playback, every frame in 24-bit colour,
 #                        sized to fill the terminal (run-color-256 for 256 colours)
+#   make run-play        play it yourself with the keyboard, 24-bit colour
+#                        (run-play-256: 256 colours; run-play-ascii: ASCII over the UART only)
+#   make play            build build/<platform>/play/: keyboard + ASCII over the UART, for hardware
 #   make deterministic   build build/<platform>/deterministic/doom-riscv64.elf: same instruction
 #                        stream on every core/simulator (virtual clock), for CPU studies
 #   make newlib          (re)build the medany newlib this build links against
@@ -64,6 +67,8 @@ SHOULD_REDRAW_IN_PLACE         ?= 0
 SHOULD_USE_DETERMINISTIC_CLOCK ?= 0
 # 1 = stdout goes through QEMU semihosting (fast; QEMU only), see platform_config.h.
 SHOULD_USE_SEMIHOSTING_CONSOLE ?= 0
+# 1 = read the keyboard from the UART (platform/keyboard_input.c).
+SHOULD_READ_KEYBOARD           ?= 0
 PLATFORM_DEFINES               ?=
 
 # ---- Board profiles ----------------------------------------------------
@@ -120,6 +125,13 @@ RUN_ASCII_FRAME_INTERVAL := 35
 # ends, unlike -timedemo which runs as fast as the CPU can.
 REAL_TIME_DEMO_COMMAND_LINE := doom -iwad doom1.wad -playdemo demo1 -nogui
 
+# No demo argument: DOOM starts at the title screen and waits for the player.
+PLAY_COMMAND_LINE := doom -iwad doom1.wad -nogui
+# The keyboard targets share these; a game has no natural end, so no timeout
+# (GNU timeout treats 0 as "never").
+PLAY_OPTIONS := SHOULD_READ_KEYBOARD=1 FRAME_OUTPUT_INTERVAL=1 SHOULD_REDRAW_IN_PLACE=1 \
+    RUN_TIMEOUT_SECONDS=0 'DOOM_COMMAND_LINE=$(PLAY_COMMAND_LINE)'
+
 # DOOM renders natively at 320x200; asking doomgeneric for exactly that size
 # avoids an extra scaling pass on every frame.
 FRAMEBUFFER_WIDTH  := 320
@@ -144,7 +156,8 @@ PLATFORM_FLAGS := $(COMMON_FLAGS) -Wall -Wextra $(ALL_PLATFORM_DEFINES) \
     -DFRAME_COLUMN_COUNT=$(FRAME_COLUMN_COUNT) \
     -DSHOULD_REDRAW_IN_PLACE=$(SHOULD_REDRAW_IN_PLACE) \
     -DPLATFORM_HAS_SEMIHOSTING_CONSOLE=$(SHOULD_USE_SEMIHOSTING_CONSOLE) \
-    -DSHOULD_USE_DETERMINISTIC_CLOCK=$(SHOULD_USE_DETERMINISTIC_CLOCK)
+    -DSHOULD_USE_DETERMINISTIC_CLOCK=$(SHOULD_USE_DETERMINISTIC_CLOCK) \
+    -DSHOULD_READ_KEYBOARD=$(SHOULD_READ_KEYBOARD)
 
 LINK_FLAGS := $(ARCHITECTURE_FLAGS) -nostartfiles -nostdlib -static \
     -Wl,--gc-sections -Wl,--wrap=I_Error \
@@ -176,6 +189,7 @@ PLATFORM_OBJECTS := \
     $(VARIANT_DIRECTORY)/doomgeneric_baremetal.o \
     $(VARIANT_DIRECTORY)/compiler_runtime.o \
     $(VARIANT_DIRECTORY)/terminal_renderer.o \
+    $(VARIANT_DIRECTORY)/keyboard_input.o \
     $(VARIANT_DIRECTORY)/wad_image.o
 
 # Records the options this variant was last built with. Rewritten (and so
@@ -199,7 +213,7 @@ QEMU_FLAGS += -semihosting-config enable=on,target=native
 endif
 RUN_TIMEOUT_SECONDS ?= 300
 
-.PHONY: all run run-ascii run-color run-color-256 deterministic run-deterministic newlib wad disassembly clean distclean
+.PHONY: all run run-ascii run-color run-color-256 run-play run-play-256 run-play-ascii play deterministic run-deterministic newlib wad disassembly clean distclean
 
 all: $(OUTPUT_ELF) $(OUTPUT_BINARY)
 
@@ -233,7 +247,7 @@ $(BUILD_DIRECTORY)/doom/%.o: $(DOOM_SOURCE_DIRECTORY)/%.c | $(NEWLIB_LIBRARY)
 	@echo "  CC   $(notdir $<)"
 	@$(CC) $(DOOM_FLAGS) -c $< -o $@
 
-$(VARIANT_DIRECTORY)/%.o: $(PLATFORM_DIRECTORY)/%.c $(PLATFORM_DIRECTORY)/platform_config.h $(PLATFORM_DIRECTORY)/platform_hardware.h $(PLATFORM_DIRECTORY)/terminal_renderer.h $(CONFIGURATION_STAMP) | $(NEWLIB_LIBRARY)
+$(VARIANT_DIRECTORY)/%.o: $(PLATFORM_DIRECTORY)/%.c $(PLATFORM_DIRECTORY)/platform_config.h $(PLATFORM_DIRECTORY)/platform_hardware.h $(PLATFORM_DIRECTORY)/terminal_renderer.h $(PLATFORM_DIRECTORY)/keyboard_input.h $(CONFIGURATION_STAMP) | $(NEWLIB_LIBRARY)
 	@mkdir -p $(dir $@)
 	@echo "  CC   $(notdir $<)"
 	@$(CC) $(PLATFORM_FLAGS) -c $< -o $@
@@ -280,6 +294,23 @@ run-color-256:
 	$(MAKE) VARIANT_NAME=color256 FRAME_RENDER_MODE=palette256 FRAME_OUTPUT_INTERVAL=1 \
 	    SHOULD_USE_SEMIHOSTING_CONSOLE=1 \
 	    SHOULD_REDRAW_IN_PLACE=1 'DOOM_COMMAND_LINE=$(REAL_TIME_DEMO_COMMAND_LINE)' run
+
+# Keyboard play under QEMU: picture through semihosting (fast), keys through
+# the UART. Quit with Ctrl-C (QEMU passes it to the game) or the DOOM menu.
+run-play:
+	$(MAKE) VARIANT_NAME=play-color FRAME_RENDER_MODE=truecolor SHOULD_USE_SEMIHOSTING_CONSOLE=1 \
+	    $(PLAY_OPTIONS) run
+
+run-play-256:
+	$(MAKE) VARIANT_NAME=play-color256 FRAME_RENDER_MODE=palette256 SHOULD_USE_SEMIHOSTING_CONSOLE=1 \
+	    $(PLAY_OPTIONS) run
+
+# Everything over the UART, as on hardware without a debugger.
+run-play-ascii:
+	$(MAKE) VARIANT_NAME=play FRAME_RENDER_MODE=ascii $(PLAY_OPTIONS) run
+
+play:
+	$(MAKE) VARIANT_NAME=play FRAME_RENDER_MODE=ascii $(PLAY_OPTIONS) all
 
 deterministic:
 	$(MAKE) VARIANT_NAME=deterministic SHOULD_USE_DETERMINISTIC_CLOCK=1 all

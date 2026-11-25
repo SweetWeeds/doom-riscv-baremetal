@@ -3,7 +3,9 @@
 [doomgeneric](https://github.com/ozkl/doomgeneric) built as a bare-metal RV64GC
 program: no OS, no firmware, no display. It boots in machine mode, plays back
 the demo recorded in the shareware WAD (`-timedemo demo1`), prints the result
-on the UART, and powers the machine off.
+on the UART, and powers the machine off. It can also draw every frame on a
+serial terminal and take keyboard input from it, so the game is playable over
+a UART (see "Playing with the keyboard").
 
 ![DOOM E1 demo frame in a terminal, 24-bit colour half blocks](docs/images/truecolor.png)
 
@@ -37,6 +39,7 @@ make run             # run on QEMU virt
 make run-ascii       # timedemo + every 35th frame as ASCII text (terminal-sized)
 make run-color       # watch the demo at real speed in 24-bit colour, filling the terminal
 make run-color-256   # same, for terminals without 24-bit colour
+make run-play        # play it yourself: keyboard in, 24-bit colour out (Ctrl-C quits)
 make deterministic   # build/qemu-virt/deterministic/doom-riscv64.elf, see below
 ```
 
@@ -68,6 +71,8 @@ been triggered yet.
 | `make run-ascii` | hardware timer | ASCII every 35 frames, appended | checking by eye that it renders |
 | `make run-color` | hardware timer | every frame, 24-bit colour, redrawn in place | watching it (`-playdemo`, real speed, ~2.5 min) |
 | `make run-color-256` | hardware timer | every frame, xterm 256 colours | same, older terminals |
+| `make run-play` (`-256`, `-ascii`) | hardware timer | every frame, redrawn in place | playing with the keyboard on QEMU |
+| `make play` | hardware timer | every frame, ASCII, over the UART only | playing on hardware |
 | `make deterministic` | virtual counter | none | CPU simulators: instruction count independent of core speed |
 
 Why the deterministic variant exists: some DOOM loops (the screen-wipe
@@ -80,12 +85,14 @@ virt, same ELF per column:
 
 | Run | `make` (hardware timer) [instr] | `make deterministic` (virtual clock) [instr] |
 |---|---|---|
-| 1 | 16,024,243,284 | 15,966,014,971 |
-| 2 | 16,024,602,351 | 15,966,014,971 |
+| 1 | 16,024,243,284 | 15,966,021,639 |
+| 2 | 16,024,602,351 | 15,966,021,639 |
 | 3 | 16,029,034,983 | – |
 
-(Hardware-timer runs measured before the colour renderer was added; the
-deterministic count was re-measured after it, twice, identical.)
+(Hardware-timer runs measured before the colour renderer was added. The
+deterministic count was re-measured after keyboard input was added, twice,
+identical; it was 15,966,014,971 before that change, +6,668 instructions,
+which came with the UART transmit loop now also collecting received bytes.)
 
 Both play 5,026 gametics (game logic steps, 35 per game second) and draw
 5,065 frames. In the deterministic build the printed "realtics"/fps are
@@ -104,6 +111,7 @@ Other knobs (all `make VAR=value`):
 - `FRAME_COLUMN_COUNT` (0 = ask the terminal its size; falls back to 80 columns)
 - `SHOULD_REDRAW_IN_PLACE` (1 = animate at the top-left instead of scrolling)
 - `SHOULD_USE_SEMIHOSTING_CONSOLE` (1 = fast stdout through QEMU semihosting, see below)
+- `SHOULD_READ_KEYBOARD` (1 = keys typed on the UART terminal control the game)
 - `PLATFORM_DEFINES` to retarget, e.g. `-DPLATFORM_UART_BASE_ADDRESS=0x...`
 - `VARIANT_NAME` gives each configuration its own build directory.
 
@@ -133,6 +141,85 @@ The rate on a real terminal depends on how fast it parses escape sequences.
 DOOM keeps real time either way; a slower terminal just shows fewer frames.
 Semihosting only works under QEMU with `-semihosting-config enable=on,target=native`
 (the run targets add it); on real hardware the `ebreak` sequence traps.
+
+## Playing with the keyboard
+
+```sh
+make run-play                            # QEMU virt, colour through semihosting, keys through the UART
+make run-play-ascii                      # everything over the UART, as on hardware
+make PLATFORM=qemu-sifive-u run-play     # same on sifive_u
+make PLATFORM=<your board> play          # image for hardware: ASCII frames + keys over the UART
+```
+
+DOOM starts at the title screen: Esc opens the menu, Enter picks New Game,
+the episode and the skill. Ctrl-C quits (QEMU `-nographic` hands it to the
+guest), as does Quit Game in the menu.
+
+| Key on the terminal | DOOM action |
+|---|---|
+| arrows, `w` `s` | move forward/back, turn |
+| `a` `d`, `,` `.` | strafe left/right |
+| `f` | fire (Ctrl in DOOM) |
+| Space, `e` | use / open |
+| `r` | run on/off (Shift in DOOM) |
+| `1`-`7` | weapons |
+| Tab | automap |
+| Esc, Enter, `y` `n` | menu |
+| F1-F12 | DOOM's F-keys |
+| Ctrl-C | quit |
+
+Why it works the way it does (`platform/keyboard_input.c`): a terminal sends
+characters, never "key released", and Ctrl, Shift or Alt alone send nothing.
+
+- **Releases are guessed.** Every character is a key press, auto-repeat
+  included. A key counts as released when its characters stop: 550 ms after a
+  single character, because the first auto-repeat comes only after the
+  operating system's repeat delay (500 ms by default on Windows), or 150 ms
+  after the last repeat. So a tap moves you for about half a second. Change
+  the waits with `PLATFORM_DEFINES="-DKEY_RELEASE_WAIT_AFTER_FIRST_CHARACTER_MILLISECONDS=300"`
+  (and `..._AFTER_REPEAT_...`); keep the first above your terminal's repeat
+  delay or a held key stops once before repeating.
+- **One key at a time.** Terminals only repeat the last key pressed, so
+  running while turning is not possible. A new key releases the previous one.
+- **Arrows are escape sequences** (`ESC [ A`). A lone ESC followed by nothing
+  for 100 ms is the Escape key; ESC + another character is Escape then that
+  character (Alt+key).
+- **Letters bound above cannot be typed**, so cheats containing them
+  (`iddqd`, `idkfa`) do not work. The table is `translateCharacter()`.
+- **Nothing is saved.** The file layer is read-only, so saving a game or
+  the settings fails quietly and play goes on.
+- **Typed keys are not lost while DOOM is busy.** The UART receive FIFO holds
+  only 8 (SiFive) or 16 (16550) bytes. Received bytes go into a 256-byte
+  buffer whenever the CPU waits: for the transmitter (a frame takes about
+  0.2 s at 115200 bps, see below) or in DOOM's sleeps, such as the one-second
+  screen wipe between title, demo and level, when DOOM reads no input at all.
+- **Latency on hardware** is at least one frame's transmission time: ~0.2 s
+  for 80x30 ASCII at 115200 bps, seconds for colour. ASCII at a small
+  terminal size is the playable choice over a real UART.
+
+`PLATFORM_DEFINES=-DSHOULD_LOG_KEY_EVENTS=1` prints every key event DOOM
+gets (it scrolls over the picture), handy for checking what a terminal sends.
+
+Checked on QEMU by typing scripted keys into a pseudo-terminal (the harness
+writes the bytes at set times; a `SHOULD_LOG_KEY_EVENTS=1` build prints the
+events with DOOM's clock). Same script, same keys, both boards:
+
+| Check | `qemu-virt` (16550) | `qemu-sifive-u` (SiFive UART) |
+|---|---|---|
+| Esc, Enter x3 → game starts on E1M1 (frames inspected) | yes (truecolor) | yes (ASCII over the UART) |
+| single Right arrow: press → guessed release [ms] | 6,987 → 7,558 (571) | 6,988 → 7,559 (571) |
+| Up held 3 s, 90 repeats 33 ms apart: last repeat → guessed release [ms] | 11,444 → 11,615 (171) | 11,445 → 11,616 (171) |
+| key presses DOOM received / characters sent [count] | 99 / 99 | 99 / 99 |
+| `a`, then `f` 200 ms later: strafe released when fire pressed [ms] | 12,215 / 12,215 | 12,188 / 12,188 |
+| `r` twice: run (Shift) on, then off | yes | yes |
+| `ESC O P` → F1, `ESC [ 15 ~` → F5, ESC + `x` 50 ms apart → Escape, `x` | yes | yes |
+| Ctrl-C → exit status 0 | yes | yes |
+
+The release times are the configured waits (550 and 150 ms) plus up to one
+DOOM tic (28.6 ms), because DOOM asks for input once per tic.
+
+Not checkable in QEMU: its UARTs never make the CPU wait to transmit, so the
+receive buffering during transmission is only exercised on hardware.
 
 ## Boards
 
@@ -208,6 +295,7 @@ platform objects in place (tracked in `build_configuration.txt`).
 | `platform/wad_image.S` | `.incbin` of `wad/doom1.wad` |
 | `platform/doomgeneric_baremetal.c` | doomgeneric callbacks, clean exit on timedemo |
 | `platform/terminal_renderer.c` | terminal size query, ASCII / truecolor / 256-colour frame output |
+| `platform/keyboard_input.c` | terminal characters and escape sequences → DOOM key presses and guessed releases |
 | `platform/compiler_runtime.c` | medany `__clzdi2` (see below) |
 
 Upstream doomgeneric is not modified; two behaviours are adjusted at link
