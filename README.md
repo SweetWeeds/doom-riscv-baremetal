@@ -5,6 +5,20 @@ program: no OS, no firmware, no display. It boots in machine mode, plays back
 the demo recorded in the shareware WAD (`-timedemo demo1`), prints the result
 on the UART, and powers the machine off.
 
+![DOOM E1 demo frame in a terminal, 24-bit colour half blocks](docs/images/truecolor.png)
+
+The same demo frame in the three terminal output modes (`truecolor` above,
+160x60 cells; `palette256` and `ascii` below). Captured from QEMU virt with
+`-playdemo demo1` on the virtual clock, frame 2,500, and drawn as a terminal
+shows it (8x16-pixel cells):
+
+| `palette256` (xterm 256 colours, 160x60 cells) | `ascii` (120x45 cells) |
+|---|---|
+| ![256-colour frame](docs/images/palette256.png) | ![ASCII frame](docs/images/ascii.png) |
+
+DOOM's browns and greens fall between the 256-colour cube levels, so that mode
+looks greyer than truecolor.
+
 ## Requirements
 
 - `riscv64-unknown-elf-gcc` (tested with 15.1.0) and the newlib source tree it
