@@ -1,0 +1,5 @@
+# Build output (includes the medany newlib, ~180 MB)
+/build/
+# id Software's shareware WAD is downloaded by "make wad", not distributed
+/wad/*.wad
+/wad/*.download

@@ -1,0 +1,71 @@
+/*
+ * Linker script template. It is run through the C preprocessor together with
+ * platform_config.h, so the memory map is defined in exactly one place.
+ */
+#include "platform_config.h"
+
+OUTPUT_ARCH("riscv")
+ENTRY(_start)
+
+MEMORY
+{
+    RAM (rwx) : ORIGIN = PLATFORM_RAM_BASE_ADDRESS, LENGTH = PLATFORM_RAM_SIZE_BYTES
+}
+
+SECTIONS
+{
+    /* Boot code must be the first thing at the reset address. */
+    .text : {
+        KEEP(*(.text.boot))
+        *(.text .text.*)
+    } > RAM
+
+    .rodata : ALIGN(16) {
+        *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+    } > RAM
+
+    .init_array : ALIGN(8) {
+        PROVIDE_HIDDEN(__init_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP(*(.init_array))
+        PROVIDE_HIDDEN(__init_array_end = .);
+    } > RAM
+
+    .fini_array : ALIGN(8) {
+        PROVIDE_HIDDEN(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        PROVIDE_HIDDEN(__fini_array_end = .);
+    } > RAM
+
+    .data : ALIGN(16) {
+        *(.data .data.*)
+    } > RAM
+
+    /*
+     * Small data goes last before bss so that the global pointer (gp) can
+     * reach both small initialised and small zeroed variables.
+     */
+    .sdata : ALIGN(16) {
+        __global_pointer$ = . + 0x800;
+        *(.sdata .sdata.*)
+    } > RAM
+
+    .bss (NOLOAD) : ALIGN(16) {
+        __bss_start = .;
+        *(.sbss .sbss.*)
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(16);
+        __bss_end = .;
+    } > RAM
+
+    /* Everything between the end of bss and the stack is malloc heap. */
+    . = ALIGN(16);
+    __heap_start = .;
+    __stack_top = ORIGIN(RAM) + LENGTH(RAM);
+    __heap_end = __stack_top - PLATFORM_STACK_SIZE_BYTES;
+
+    ASSERT(__heap_start < __heap_end, "Program image does not fit in RAM")
+}
